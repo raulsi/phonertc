@@ -26,29 +26,31 @@ public class Session {
 	CallbackContext _callbackContext;
 	SessionConfig _config;
 	String _sessionKey;
-	
+
 	MediaConstraints _sdpMediaConstraints;
 	PeerConnection _peerConnection;
-	
+
 	private LinkedList<IceCandidate> _queuedRemoteCandidates;
 	private Object _queuedRemoteCandidatesLocker = new Object();
-	
+
 	private MediaStream _localStream;
 	private VideoTrack _videoTrack;
-	
+
+	private SessionDescription prevsdp ;
+
 	// Synchronize on quit[0] to avoid teardown-related crashes.
 	private final Boolean[] _quit = new Boolean[] { false };
-	
+
 	private final SDPObserver _sdpObserver = new SDPObserver();
 	private final PCObserver _pcObserver = new PCObserver();
-	
+
 	public Session(PhoneRTCPlugin plugin, CallbackContext callbackContext, SessionConfig config, String sessionKey) {
 		_plugin = plugin;
 		_callbackContext = callbackContext;
 		_config = config;
 		_sessionKey = sessionKey;
 	}
-	
+
 	public void call() {
 		_queuedRemoteCandidates = new LinkedList<IceCandidate>();
 		_quit[0] = false;
@@ -57,24 +59,24 @@ public class Session {
 		final LinkedList<PeerConnection.IceServer> iceServers = new LinkedList<PeerConnection.IceServer>();
 		iceServers.add(new PeerConnection.IceServer("stun:stun.l.google.com:19302"));
 		iceServers.add(new PeerConnection.IceServer(_config.getTurnServerHost(),
-													_config.getTurnServerUsername(), 
+													_config.getTurnServerUsername(),
 													_config.getTurnServerPassword()));
-		
+
 		// Initialize SDP media constraints
 		_sdpMediaConstraints = new MediaConstraints();
 		_sdpMediaConstraints.mandatory.add(new MediaConstraints.KeyValuePair(
 				"OfferToReceiveAudio", "true"));
 		_sdpMediaConstraints.mandatory.add(new MediaConstraints.KeyValuePair(
 				"OfferToReceiveVideo", _plugin.getVideoConfig() == null ? "false" : "true"));
-		
+
 		// Initialize PeerConnection
 		MediaConstraints pcMediaConstraints = new MediaConstraints();
 		pcMediaConstraints.optional.add(new MediaConstraints.KeyValuePair(
 			"DtlsSrtpKeyAgreement", "true"));
-		
+
 		_peerConnection = _plugin.getPeerConnectionFactory()
 				.createPeerConnection(iceServers, pcMediaConstraints, _pcObserver);
-		
+
 		// Initialize local stream
 		createOrUpdateStream();
 
@@ -83,16 +85,17 @@ public class Session {
 			_peerConnection.createOffer(_sdpObserver, _sdpMediaConstraints);
 		}
 	}
-	
+
 	public void receiveMessage(String message) {
 		try {
 			JSONObject json = new JSONObject(message);
 			String type = (String) json.get("type");
+			prevsdp = null;
 			if (type.equals("candidate")) {
 				final IceCandidate candidate = new IceCandidate(
 						(String) json.get("id"), json.getInt("label"),
 						(String) json.get("candidate"));
-				
+
 				synchronized (_queuedRemoteCandidatesLocker) {
 					if (_queuedRemoteCandidates != null) {
 						_queuedRemoteCandidates.add(candidate);
@@ -103,7 +106,7 @@ public class Session {
 									_peerConnection.addIceCandidate(candidate);
 								}
 							}
-						});	
+						});
 					}
 				}
 
@@ -111,6 +114,9 @@ public class Session {
 				final SessionDescription sdp = new SessionDescription(
 						SessionDescription.Type.fromCanonicalForm(type),
 						preferISAC((String) json.get("sdp")));
+				if (type.equals("offer")) {
+					prevsdp = sdp;
+				}
 				_plugin.getActivity().runOnUiThread(new Runnable() {
 					public void run() {
 						_peerConnection.setRemoteDescription(_sdpObserver, sdp);
@@ -124,6 +130,21 @@ public class Session {
 						disconnect(false);
 					}
 				});
+			} else if (type.equals("reverse")) {
+				_peerConnection = null;
+				_queuedRemoteCandidates = new LinkedList<IceCandidate>();
+				_config.setInitiator (!_config.isInitiator());
+				this.call();
+				try {
+					JSONObject data = new JSONObject();
+					data.put("type", "reversed");
+					sendMessage(data);
+				} catch (JSONException e) {}
+			} else if (type.equals("reversed")) {
+				_peerConnection = null;
+				_config.setInitiator (!_config.isInitiator());
+				_queuedRemoteCandidates = new LinkedList<IceCandidate>();
+				this.call();
 			} else {
 				// throw new RuntimeException("Unexpected message: " + message);
 			}
@@ -131,26 +152,26 @@ public class Session {
 			throw new RuntimeException(e);
 		}
 	}
-	
+
 	public void createOrUpdateStream() {
 		if (_localStream != null) {
 			_peerConnection.removeStream(_localStream);
 			_localStream = null;
 		}
-		
+
 		_localStream = _plugin.getPeerConnectionFactory().createLocalMediaStream("ARDAMS");
-		
+
 		if (_config.isAudioStreamEnabled() && _plugin.getLocalAudioTrack() != null) {
 			_localStream.addTrack(_plugin.getLocalAudioTrack());
 		}
-		 
+
 		if (_config.isVideoStreamEnabled() && _plugin.getLocalVideoTrack() != null) {
 			_localStream.addTrack(_plugin.getLocalVideoTrack());
 		}
-		
+
 		_peerConnection.addStream(_localStream);
 	}
-	
+
 	void sendMessage(JSONObject data) {
 		PluginResult result = new PluginResult(PluginResult.Status.OK, data);
 		result.setKeepCallback(true);
@@ -211,14 +232,14 @@ public class Session {
 	        if (_quit[0]) {
 	        	return;
 	        }
-	        
+
 	        _quit[0] = true;
-	        
+
 	        if (_videoTrack != null) {
 	        	_plugin.removeRemoteVideoTrack(_videoTrack);
 	        	_videoTrack = null;
 	        }
-	        
+
 	        if (sendByeMessage) {
 				try {
 					JSONObject data = new JSONObject();
@@ -226,27 +247,27 @@ public class Session {
 					sendMessage(data);
 				} catch (JSONException e) {}
 	        }
-	        
+
 	        if (_peerConnection != null) {
 	        	if (_plugin.shouldDispose()) {
 	        		_peerConnection.dispose();
 	        	} else {
 	        		_peerConnection.close();
 	        	}
-	        	
+
 	        	_peerConnection = null;
 	        }
-	        
+
 			try {
 				JSONObject data = new JSONObject();
 				data.put("type", "__disconnected");
 				sendMessage(data);
-			} catch (JSONException e) {} 
-			 
+			} catch (JSONException e) {}
+
 	        _plugin.onSessionDisconnect(_sessionKey);
 	    }
 	}
-	
+
 	public void setConfig(SessionConfig config) {
 		_config = config;
 	}
@@ -278,12 +299,12 @@ public class Session {
 				public void run() {
 					if (stream.videoTracks.size() > 0) {
 						_videoTrack = stream.videoTracks.get(0);
-					
+
 						if (_videoTrack != null) {
 							_plugin.addRemoteVideoTrack(_videoTrack);
 						}
 					}
-					
+
 					try {
 						JSONObject data = new JSONObject();
 						data.put("type", "__answered");
@@ -338,7 +359,7 @@ public class Session {
 
 		}
 
-		@Override
+    @Override
 		public void onIceCandidatesRemoved(IceCandidate[] candidates) {
 
 		}
@@ -407,9 +428,16 @@ public class Session {
 				}
 			});
 		}
-		
+
 		@Override
 		public void onSetFailure(final String error) {
+			if (prevsdp != null){
+				try {
+					JSONObject data = new JSONObject();
+					data.put("type", "reverse");
+					sendMessage(data);
+				} catch (JSONException e) {}
+			}
 			_plugin.getActivity().runOnUiThread(new Runnable() {
 				public void run() {
 					//throw new RuntimeException("setSDP error: " + error);
@@ -421,11 +449,11 @@ public class Session {
 			synchronized (_queuedRemoteCandidatesLocker) {
 				if (_queuedRemoteCandidates == null)
 					return;
-				
+
 				for (IceCandidate candidate : _queuedRemoteCandidates) {
 					_peerConnection.addIceCandidate(candidate);
 				}
-				
+
 				_queuedRemoteCandidates = null;
 			}
 		}

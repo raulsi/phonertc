@@ -35,8 +35,8 @@ function Session(sessionKey, config, sendMessageCallback) {
 
     this.peerConnection.setRemoteDescription(new SessionDescription(message), function () {
       console.log('setRemote success');
-    }, function (error) { 
-      console.log(error); 
+    }, function (error) {
+      console.log(error);
     });
   };
 
@@ -114,7 +114,7 @@ Session.prototype.createOrUpdateStream = function () {
   }
 
   this.localStream = new MediaStream();
-  
+
   if (this.config.streams.audio) {
     this.localStream.addTrack(localAudioTrack);
   }
@@ -163,13 +163,14 @@ Session.prototype.call = function () {
     // create the peer connection
     self.peerConnection = new PeerConnection({
       iceServers: [
-        { 
-          url: 'stun:stun.l.google.com:19302' 
+        {
+          url: 'stun:stun.l.google.com:19302'
         },
-        { 
-          url: self.config.turn.host, 
-          username: self.config.turn.username, 
-          password: self.config.turn.password 
+        {
+          url: self.config.turn.host,
+          username: self.config.turn.username,
+          password: self.config.turn.password,
+          credential: self.config.turn.password
         }
       ]
     }, { optional: [ { DtlsSrtpKeyAgreement: true } ]});
@@ -186,9 +187,9 @@ Session.prototype.call = function () {
     }
   }
 
-  var missingStreams = { 
-    video: self.config.streams.video && !localVideoTrack, 
-    audio: self.config.streams.audio && !localAudioTrack 
+  var missingStreams = {
+    video: self.config.streams.video && !localVideoTrack,
+    audio: self.config.streams.audio && !localAudioTrack
   };
 
   if (missingStreams.audio || missingStreams.video) {
@@ -211,7 +212,7 @@ Session.prototype.call = function () {
     });
   } else {
     call();
-  } 
+  }
 };
 
 Session.prototype.receiveMessage = function (message) {
@@ -226,15 +227,28 @@ Session.prototype.receiveMessage = function (message) {
       sdpMLineIndex: message.label,
       candidate: message.candidate
     });
-    
+
     self.peerConnection.addIceCandidate(candidate, function () {
       console.log('Remote candidate added successfully.');
     }, function (error) {
       console.log(error);
     });
-     
+
   } else if (message.type === 'bye') {
     this.disconnect(false);
+} else if (message.type === 'reverse') {
+    this.peerConnection.close();
+    this.peerConnection = null;
+    this.config.isInitiator = !this.config.isInitiator;
+    this.call();
+    this.sendMessage({ type: 'reversed' });
+} else if (message.type === 'reversed') {
+    this.peerConnection.close();
+    this.peerConnection = null;
+    this.config.isInitiator = !this.config.isInitiator;
+    setTimeout(function() {
+        Session.call();
+    }, 3000);
   }
 };
 
@@ -283,6 +297,10 @@ module.exports = {
     sessions[sessionKey] = session;
   },
   call: function (success, error, options) {
+    sessions[options[0].sessionKey].sendMessage({
+      type: '__set_session_key',
+      sessionKey: options[0].sessionKey
+    });
     sessions[options[0].sessionKey].call();
   },
   receiveMessage: function (success, error, options) {
@@ -305,7 +323,7 @@ module.exports = {
   setVideoView: function (success, error, options) {
     videoConfig = options[0];
 
-    if (videoConfig.containerParams.size[0] === 0 
+    if (videoConfig.containerParams.size[0] === 0
         || videoConfig.containerParams.size[1] === 0) {
       return;
     }
@@ -332,17 +350,17 @@ module.exports = {
             localVideoView.load();
           }, function (error) {
             console.log(error);
-          }); 
+          });
         } else {
           var stream = new MediaStream();
           stream.addTrack(localVideoTrack);
 
           localVideoView.src = URL.createObjectURL(stream);
-          localVideoView.load();         
+          localVideoView.load();
         }
 
         document.body.appendChild(localVideoView);
-      } else {    
+      } else {
         refreshLocalVideoView();
         refreshVideoContainer();
       }
@@ -389,7 +407,7 @@ function removeRemoteStream(videoView) {
 }
 
 function getCenter(videoCount, videoSize, containerSize) {
-  return Math.round((containerSize - videoSize * videoCount) / 2); 
+  return Math.round((containerSize - videoSize * videoCount) / 2);
 }
 
 function refreshVideoContainer() {
@@ -400,12 +418,12 @@ function refreshVideoContainer() {
   }
 
   var rows = n < 9 ? 2 : 3;
-  var videosInRow = n === 2 ? 2 : Math.ceil(n/rows);    
+  var videosInRow = n === 2 ? 2 : Math.ceil(n/rows);
 
   var videoSize = videoConfig.containerParams.size[0] / videosInRow;
   var actualRows = Math.ceil(n / videosInRow);
 
-  var y = getCenter(actualRows, 
+  var y = getCenter(actualRows,
                     videoSize,
                     videoConfig.containerParams.size[1])
           + videoConfig.containerParams.position[1];
@@ -413,8 +431,8 @@ function refreshVideoContainer() {
   var videoViewIndex = 0;
 
   for (var row = 0; row < rows && videoViewIndex < n; row++) {
-    var x = videoConfig.containerParams.position[0] + 
-      getCenter(row < rows - 1 || n % rows === 0 ? videosInRow : n - (Math.min(n, videoViewIndex + videosInRow) - 1), 
+    var x = videoConfig.containerParams.position[0] +
+      getCenter(row < rows - 1 || n % rows === 0 ? videosInRow : n - (Math.min(n, videoViewIndex + videosInRow) - 1),
                 videoSize,
                 videoConfig.containerParams.size[0]);
 
@@ -437,11 +455,11 @@ function refreshLocalVideoView() {
   localVideoView.style.width = videoConfig.local.size[0] + 'px';
   localVideoView.style.height = videoConfig.local.size[1] + 'px';
 
-  localVideoView.style.left = 
+  localVideoView.style.left =
     (videoConfig.containerParams.position[0] + videoConfig.local.position[0]) + 'px';
 
-  localVideoView.style.top = 
-    (videoConfig.containerParams.position[1] + videoConfig.local.position[1]) + 'px';       
+  localVideoView.style.top =
+    (videoConfig.containerParams.position[1] + videoConfig.local.position[1]) + 'px';
 }
 
 function scaleToFill(event) {
@@ -454,9 +472,9 @@ function scaleToFill(event) {
     var actualRatio = element.videoWidth / element.videoHeight;
 
     var scaleType = widthIsLargerThanHeight ? 'scaleY' : 'scaleX';
-    var adjustmentRatio = widthIsLargerThanHeight ? 
-      actualRatio / targetRatio : 
-      targetRatio / actualRatio ; 
+    var adjustmentRatio = widthIsLargerThanHeight ?
+      actualRatio / targetRatio :
+      targetRatio / actualRatio ;
 
     if (lastScaleType !== scaleType || lastAdjustmentRatio !== adjustmentRatio) {
       var transform = scaleType + '(' + adjustmentRatio + ')';
@@ -487,7 +505,7 @@ function onSessionDisconnect(sessionKey) {
     }
 
     localStreams.forEach(function (stream) {
-      stream.getTracks().forEach( function(track) { 
+      stream.getTracks().forEach( function(track) {
         track.stop();
       });
     });
