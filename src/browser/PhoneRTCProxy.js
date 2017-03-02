@@ -386,6 +386,7 @@ function addRemoteStream(stream) {
   videoView.addEventListener("loadedmetadata", scaleToFill);
   videoView.style.position = 'absolute';
   videoView.style.zIndex = 998;
+  videoView.id = "remoteView";
 
   videoView.src = URL.createObjectURL(stream);
   videoView.load();
